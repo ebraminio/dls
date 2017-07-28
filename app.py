@@ -1,6 +1,18 @@
 import os
 os.environ["KERAS_BACKEND"] = "tensorflow" # Xception needs TF
 
+import io
+import json
+import re
+import urllib.parse
+from functools import wraps
+
+from flask import Flask, request, Response
+import requests
+
+import numpy as np
+from PIL import Image
+
 from keras.applications import ResNet50
 from keras.applications import InceptionV3
 from keras.applications import Xception # TensorFlow ONLY
@@ -8,30 +20,21 @@ from keras.applications import VGG16
 from keras.applications import VGG19
 from keras.applications import MobileNet
 from keras.applications import imagenet_utils
-import keras.applications.inception_v3
 from keras.preprocessing.image import img_to_array
+import keras.applications.inception_v3
 
 from open_nsfw import OpenNsfw
-from keras.preprocessing import image
-import numpy as np
 
-import json
-import urllib.parse
-import re
-import requests
-from PIL import Image
-from flask import Flask, request, Response
-import io
 
 app = Flask(__name__)
 
 MODELS = {
-    #"mobilenet": MobileNet,
-    #"vgg16": VGG16,
-    #"vgg19": VGG19,
-    #"inception": InceptionV3,
+    "mobilenet": MobileNet,
+    "vgg16": VGG16,
+    "vgg19": VGG19,
+    "inception": InceptionV3,
     "xception": Xception, # TensorFlow ONLY
-    #"resnet": ResNet50
+    "resnet": ResNet50
 }
 
 available_models = {}
@@ -57,16 +60,32 @@ def img_classify(img, model_name="xception"):
     preds = model.predict(img)
     P = imagenet_utils.decode_predictions(preds)
 
-    return [(imagenetID, label, str(prob)) for (imagenetID, label, prob) in P[0]]
+    return [[label, float(prob), imagenetID] for (imagenetID, label, prob) in P[0]]
 
 
-@app.route('/classify/xception/<path:url>')
-def classify(url):
-    result = {
-        'title': img_classify(Image.open(io.BytesIO(requests.get(url).content)))
-    }
+def crossorigin(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        response = f(*args, **kwargs)
+        response.headers['Access-Control-Allow-Origin'] = "*"
+        return response
+    return decorated_function
+
+
+@app.route('/classify/<model>/<path:url>')
+@crossorigin
+def classify(model, url):
+    if not url.startswith('https://upload.wikimedia.org/'):
+        if not url.startswith('https://commons.wikimedia.org/'):
+            raise Exception('Only Wikipedia images are supported for now')
+
+    if model not in MODELS:
+        raise Exception('Requested model not available')
+
+    result = img_classify(Image.open(io.BytesIO(requests.get(url).content)))
     return Response(json.dumps(result, indent=1, ensure_ascii=False),
-                    content_type='application/json;charset=utf8')
+                        content_type='application/json;charset=utf8')
+
 
 def img_nsfw(img):
     img = img_to_array(img.convert('RGB').resize((224, 224)))
@@ -81,22 +100,29 @@ def img_nsfw(img):
     
     return preds[0, 1]
 
+
 @app.route('/nsfw/<path:url>')
+@crossorigin
 def nsfw(url):
+    if not url.startswith('https://upload.wikimedia.org/'):
+        if not url.startswith('https://commons.wikimedia.org/'):
+            raise Exception('Only Wikipedia images are supported for now')
+
     result = {
-        'result': str(img_nsfw(Image.open(io.BytesIO(requests.get(url).content))))
+        'result': float(img_nsfw(Image.open(io.BytesIO(requests.get(url).content))))
     }
     return Response(json.dumps(result, indent=1, ensure_ascii=False),
                     content_type='application/json;charset=utf8')
 
+
 @app.route('/')
 def maindoc():
-    return Response('''<meta name="robots" content="noindex"><h1>Deep learning services</h1>
+    return '''<meta name="robots" content="noindex"><h1>Deep learning services</h1>
 Simple tool provides basic deep-learning services for other script.<br>
 Current services:
 <ul><li>/deep-learning-services/classify/xception/[url]</li><li>/deep-learning-services/nsfw/[url]</li></ul>
 Source: https://github.com/ebraminio/dls
-''')
+'''
 
 
 if __name__ == '__main__':
